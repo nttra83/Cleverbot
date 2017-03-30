@@ -9,97 +9,57 @@
 import RxCocoa
 import RxSwift
 
-protocol ChatViewReactorType {
-  // Input
-  var viewDidLoad: PublishSubject<Void> { get }
-  var viewDidDeallocate: PublishSubject<Void> { get }
-  var messageInputDidTapSendButton: PublishSubject<String> { get }
+enum ChatViewAction {
+  case send(String)
+}
 
-  // Output
-  var sections: Driver<[ChatViewSection]> { get }
+enum ChatViewMutation {
+  case addMessage(Message)
+}
+
+struct ChatViewState {
+  var sections: [ChatViewSection] = [ChatViewSection(items: [])]
+  var cleverbotState: String? = nil
 }
 
 
-final class ChatViewReactor: ChatViewReactorType {
+final class ChatViewReactor: Reactor<ChatViewAction, ChatViewMutation, ChatViewState> {
 
-  // MARK: Types
-
-  enum MessageOperation {
-    case receive(Message)
-    case send(Message)
-  }
-
-
-  // MARK: Input
-
-  let viewDidLoad: PublishSubject<Void> = .init()
-  let viewDidDeallocate: PublishSubject<Void> = .init()
-  let messageInputDidTapSendButton: PublishSubject<String> = .init()
-
-
-  // MARK: Ouptut
-
-  let sections: Driver<[ChatViewSection]>
-
-
-  // MARK: Initializing
+  fileprivate let provider: ServiceProviderType
 
   init(provider: ServiceProviderType) {
-    // please contribute! - I don't want to use Variables 😂
-    let cleverbotState: Variable<String?> = .init(nil)
+    self.provider = provider
+    let initialState = State()
+    super.init(initialState: initialState)
+  }
 
-    let messageDidReceive: Observable<IncomingMessage> = self.messageInputDidTapSendButton
-      .withLatestFrom(cleverbotState.asObservable()) { ($0, $1) }
-      .flatMap { provider.cleverbotService.getReply(text: $0, cs: $1) }
-      .shareReplay(1)
+  override func mutate(action: ChatViewAction) -> Observable<ChatViewMutation> {
+    switch action {
+    case let .send(text):
+      let outgoingMessage = Observable.just(Message.outgoing(.init(text: text)))
+      let incomingMessage = self.provider.cleverbotService
+        .getReply(text: text, cs: self.currentState.cleverbotState)
+        .map { incomingMessage in Message.incoming(incomingMessage) }
+      return Observable.of(outgoingMessage, incomingMessage).merge()
+        .map { message in Mutation.addMessage(message) }
+    }
+  }
 
-    _ = messageDidReceive
-      .map { $0.cs }
-      .takeUntil(self.viewDidDeallocate)
-      .bindTo(cleverbotState)
-
-    let mesageOperationReceive: Observable<MessageOperation> = messageDidReceive
-      .map { MessageOperation.receive(.incoming($0)) }
-      .shareReplay(1)
-
-    let mesageOperationSend: Observable<MessageOperation> = self.messageInputDidTapSendButton
-      .map { text -> MessageOperation in
-        let outgoingMessage = OutgoingMessage(text: text)
-        let message = Message.outgoing(outgoingMessage)
-        return MessageOperation.send(message)
+  override func reduce(state: State, mutation: Mutation) -> State {
+    var state = state
+    switch mutation {
+    case let .addMessage(message):
+      let reactor = MessageCellReactor(provider: self.provider, message: message)
+      let sectionItem: ChatViewSectionItem
+      switch message {
+      case .incoming:
+        sectionItem = .incomingMessage(reactor)
+      case .outgoing:
+        sectionItem = .outgoingMessage(reactor)
       }
-      .shareReplay(1)
-
-    let messages: Observable<[Message]> = Observable
-      .of(mesageOperationReceive, mesageOperationSend)
-      .merge()
-      .scan([]) { messages, operation in
-        switch operation {
-        case .receive(let newMessage):
-          return messages + [newMessage]
-
-        case .send(let newMessage):
-          return messages + [newMessage]
-        }
-      }
-      .shareReplay(1)
-
-    let messageSection: Observable<[ChatViewSection]> = messages
-      .map { messages in
-        let sectionItems = messages.map { message -> ChatViewSectionItem in
-          let reactor = MessageCellReactor(provider: provider, message: message)
-          switch message {
-          case .incoming:
-            return ChatViewSectionItem.incomingMessage(reactor)
-          case .outgoing:
-            return ChatViewSectionItem.outgoingMessage(reactor)
-          }
-        }
-        return [ChatViewSection(items: sectionItems)]
-      }
-      .shareReplay(1)
-
-    self.sections = messageSection.asDriver(onErrorJustReturn: [])
+      state.sections[0].items.append(sectionItem)
+      return state
+    }
   }
 
 }

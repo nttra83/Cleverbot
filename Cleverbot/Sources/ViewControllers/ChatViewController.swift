@@ -13,7 +13,9 @@ import RxDataSources
 import RxKeyboard
 import RxSwift
 
-final class ChatViewController: BaseViewController {
+final class ChatViewController: BaseViewController, ViewType {
+  typealias Reactor = ChatViewReactor
+
 
   // MARK: Constants
 
@@ -51,7 +53,7 @@ final class ChatViewController: BaseViewController {
 
   // MARK: Initializing
 
-  init(reactor: ChatViewReactorType) {
+  init(reactor: Reactor) {
     super.init()
     self.title = "Cleverbot"
     self.configure(reactor: reactor)
@@ -88,13 +90,15 @@ final class ChatViewController: BaseViewController {
 
   // MARK: Configuring
 
-  private func configure(reactor: ChatViewReactorType) {
+  var reactor: Reactor?
+  func configure(reactor: Reactor) {
+    self.reactor = reactor
+
     // Delegate
     self.collectionView.rx
       .setDelegate(self)
       .addDisposableTo(self.disposeBag)
 
-    // DataSource
     self.dataSource.configureCell = { dataSource, collectionView, indexPath, sectionItem in
       switch sectionItem {
       case let .incomingMessage(reactor):
@@ -109,22 +113,14 @@ final class ChatViewController: BaseViewController {
       }
     }
 
-    // Input
-    self.rx.viewDidLoad
-      .bindTo(reactor.viewDidLoad)
+    // Action
+    self.messageInputBar.rx.sendButtonTap.map(Reactor.Action.send)
+      .bindTo(reactor.action)
       .addDisposableTo(self.disposeBag)
 
-    self.rx.deallocated
-      .bindTo(reactor.viewDidDeallocate)
-      .addDisposableTo(self.disposeBag)
-
-    self.messageInputBar.rx.sendButtonTap
-      .bindTo(reactor.messageInputDidTapSendButton)
-      .addDisposableTo(self.disposeBag)
-
-    // Output
-    reactor.sections
-      .drive(self.collectionView.rx.items(dataSource: self.dataSource))
+    // State
+    reactor.state.map { $0.sections }
+      .bindTo(self.collectionView.rx.items(dataSource: self.dataSource))
       .addDisposableTo(self.disposeBag)
 
     // UI
@@ -133,7 +129,7 @@ final class ChatViewController: BaseViewController {
         self?.collectionView.isReachedBottom() ?? false
       }
 
-    reactor.sections.asObservable()
+    reactor.state.map { $0.sections }
       .debounce(0.1, scheduler: MainScheduler.instance)
       .withLatestFrom(wasReachedBottom) { ($0, $1) }
       .filter { _, wasReachedBottom in wasReachedBottom == true }
